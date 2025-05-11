@@ -1,79 +1,82 @@
 import { MongoClient, ObjectId } from "mongodb";
 
-const uri = "mongodb://192.168.100.118:27017/";
-//   "mongodb://admin:admin123@localhost:27017/tms_db_dev?authSource=admin";
+const uri =
+  "mongodb://localhost:27017";
+// "mongodb://user:pass@host:port/db_name?authSource=admin";
 
-const BATCH_SIZE = 1000;
-
-async function fetchShipments() {
+async function updateShipmentsWithUsers() {
   const client = new MongoClient(uri);
 
   try {
     await client.connect();
     console.log("✅ Connected to MongoDB");
 
-    /** get db and collections */
-    const test_migration_db = client.db("rahranDB");
-    const shipmentsCollection = test_migration_db.collection("shipments");
+    const DB = client.db("tms_db_dev");
+    const shipmentsCollection = DB.collection("shipments");
+    const usersCollection = DB.collection("users");
 
-    const test_migration_fms_db = client.db("rahranFmsDB");
-    const vehiclesCollection = test_migration_fms_db.collection("vehicles");
+    // Step 1: Load users with shippingAgent info
+    const users = await usersCollection
+      .find({ "shippingAgent.vehicleRegistrationPlate": { $exists: true } })
+      .project({
+        _id: 1,
+        "shippingAgent._id": 1,
+        "shippingAgent.vehicleRegistrationPlate": 1,
+      })
+      .toArray();
 
-    // Step 1: Load all vehicles into a Map for quick lookup by plate
-    const vehicles = await vehiclesCollection.find({}).toArray();
-    const vehicleMap = new Map<string, ObjectId>();
+    // Step 2: Create a lookup map from plate to user info
+    const plateMap = new Map<
+      string,
+      { driverId: ObjectId; vehicleId: ObjectId }
+    >();
 
-    for (const vehicle of vehicles) {
-      if (vehicle.plate) {
-        vehicleMap.set(vehicle.plate, vehicle._id);
+    for (const user of users) {
+      const plate = user.shippingAgent?.vehicleRegistrationPlate;
+      if (plate) {
+        plateMap.set(plate, {
+          driverId: user._id,
+          vehicleId: user.shippingAgent._id,
+        });
       }
     }
 
-    console.log(`🚗 Loaded ${vehicleMap.size} vehicles into memory`);
+    console.log(`👤 Loaded ${plateMap.size} users with shippingAgent vehicles`);
 
-    // Step 2: Count shipments and loop in batches
+    // Step 3: Process shipments in chunks
     const totalShipments = await shipmentsCollection.countDocuments();
     console.log(`📦 Total shipments: ${totalShipments}`);
 
-    for (let skip = 0; skip < totalShipments; skip += BATCH_SIZE) {
-      console.log(`🔄 Processing batch: ${skip} - ${skip + BATCH_SIZE}`);
-
-      const shipments = await shipmentsCollection
-        .find({})
-        .skip(skip)
-        .limit(BATCH_SIZE)
-        .toArray();
-
-      const bulkOperations = [];
-
-      for (const shipment of shipments) {
-        const plate = shipment.plate;
-        if (!plate) continue;
-        const vehicleId = vehicleMap.get(plate);
-        if (vehicleId) {
-          bulkOperations.push({
-            updateOne: {
-              filter: { _id: shipment._id },
-              update: { $set: { vehicleId } },
+    const bulkOperations: any[] = [];
+    plateMap.forEach((item, index) => {
+      bulkOperations.push({
+        updateMany: {
+          filter: { plate: index },
+          update: {
+            $set: {
+              vehicleId: item.vehicleId,
+              driverId: item.driverId,
             },
-          });
-        }
-      }
+          },
+        },
+      });
+    })
 
-      if (bulkOperations.length > 0) {
-        const result = await shipmentsCollection.bulkWrite(bulkOperations);
-        console.log(`✅ Updated ${result.modifiedCount} shipments in batch`);
-      } else {
-        console.log("⚠️ No matching plates found in this batch");
-      }
+    const totalBulkOperations = bulkOperations.length
+    const BATCH_SIZE = 50;
+
+
+    for (let skip = 0; skip < totalBulkOperations; skip += BATCH_SIZE) {
+      const result = await shipmentsCollection.bulkWrite(bulkOperations.slice(skip, skip + BATCH_SIZE));
+      console.log(`✅ Updated ${result.modifiedCount} shipments in batch`);
     }
 
-    console.log("🎉 All shipments processed successfully");
+    console.log("🎉 Migration completed successfully");
   } catch (error) {
-    console.error("❌ Error fetching shipments:", error);
+    console.error("❌ Error during migration:", error);
   } finally {
     await client.close();
   }
 }
 
-fetchShipments();
+updateShipmentsWithUsers();

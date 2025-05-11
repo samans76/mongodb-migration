@@ -1,8 +1,8 @@
 import { MongoClient } from "mongodb";
 
 const uri = "mongodb://localhost:27017";
-const fmsDBName = "rahranFmsDB";
-const serverDBName = "rahranDB";
+const fmsDBName = "fms_db_dev";
+const serverDBName = "tms_db_dev";
 
 async function migrateUserOrganizations() {
   const mongoClient = new MongoClient(uri);
@@ -13,24 +13,19 @@ async function migrateUserOrganizations() {
     const serverDB = mongoClient.db(serverDBName);
     const fmsUsersCollection = fmsDB.collection("users");
     const serverUsersCollection = serverDB.collection("users");
+    const serverUsers = await serverUsersCollection.find({}).toArray();
 
-    const fmsUsers = await fmsUsersCollection.find({}).toArray();
-    const serverUsersMap = new Map(
-      (await serverUsersCollection.find({}).toArray()).map(u => [u._id.toHexString(), u])
-    );
-
-    const updates = [];
-    for (const user of fmsUsers) {
-      const sameUserInServer = serverUsersMap.get(user._id.toHexString());
-      if (sameUserInServer?.organizations) {
-        updates.push({
-          updateOne: {
-            filter: { _id: user._id },
-            update: { $set: { organizations: sameUserInServer.organizations } },
-          }
-        });
-      }
+    const updates: any[] = [];
+    for (const user of serverUsers) {
+      updates.push({
+        updateOne: {
+          filter: { _id: user._id },
+          update: { $set: { organizations: user.organizations ? user.organizations : [] } },
+        }
+      })
     }
+
+
 
     if (updates.length > 0) {
       const result = await fmsUsersCollection.bulkWrite(updates);
@@ -56,28 +51,18 @@ async function migrateVehicleOrganizations() {
     const serverUsersCollection = serverDB.collection("users");
     const fmsVehicleCollection = fmsDB.collection("vehicles");
 
-    const fmsVehicles = await fmsVehicleCollection.find({}).toArray();
-    const serverUsers = await serverUsersCollection.find({}).toArray();
+    const serverAgents = await serverUsersCollection.find({shippingAgent: {$exists: true}}).toArray();
+    const agents = serverAgents.map((u) => u.shippingAgent)
 
-    const agentMap = new Map();
-    for (const user of serverUsers) {
-      const agent = user.shippingAgent;
-      if (agent?._id) {
-        agentMap.set(agent._id.toHexString(), agent);
-      }
-    }
+    const updates: any[] = []
+    for (const agent of agents) {
+      updates.push({
+        updateOne: {
+          filter: { _id: agent._id },
+          update: { $set: { accessibleByOrganizations: agent.accessableByOrganizations ? agent.accessableByOrganizations : [] } }
+        }
+      });
 
-    const updates = [];
-    for (const vehicle of fmsVehicles) {
-      const sameAgentInServer = agentMap.get(vehicle._id.toHexString());
-      if (sameAgentInServer?.accessableByOrganizations) {
-        updates.push({
-          updateOne: {
-            filter: { _id: vehicle._id },
-            update: { $set: { accessibleByOrganizations: sameAgentInServer.accessableByOrganizations } }
-          }
-        });
-      }
     }
 
     if (updates.length > 0) {
