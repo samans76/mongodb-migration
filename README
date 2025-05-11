@@ -1,0 +1,4 @@
+FOLLOW THESE STEPS : 
+1. $npm install
+2. change uri , db names
+3. $npx ts-node src/{file-name}     example : $npx ts-node src/user-vehicle-add-organization
